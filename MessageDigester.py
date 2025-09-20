@@ -1,4 +1,3 @@
-import aiohttp
 import asyncio
 from datetime import datetime, timezone
 from email.mime.text import MIMEText
