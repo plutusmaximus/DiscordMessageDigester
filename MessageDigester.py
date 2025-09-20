@@ -390,7 +390,7 @@ async def generate_digest(server_id : int):
     except Exception as e:
         logger.exception(f"An error occurred: {str(e)}")
 
-# Return the server ID in string format.  Used by bot commands.
+# Return the server ID.
 def get_server_id(ctx : commands.Context[commands.Bot]) -> int:
     assert ctx.guild is not None  # Tell type checker ctx.guild is not None
     return ctx.guild.id  # Guild ID is the server ID
