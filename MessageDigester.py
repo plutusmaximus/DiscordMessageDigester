@@ -1,3 +1,4 @@
+import aiohttp
 import asyncio
 from datetime import datetime, timezone
 from email.mime.text import MIMEText
@@ -598,7 +599,7 @@ async def remove_emails(ctx : commands.Context[commands.Bot], *, recipientCSV : 
 
         populate_server_config(server_id)
 
-        # Merge lists and remove duplicates
+        # Remove emails from recipient list
         oldEmails = configs[server_id]['email_recipients']
         emails = [recip for recip in oldEmails if recip not in recipientsToRemove]
 
@@ -640,38 +641,6 @@ async def show_config(ctx : commands.Context[commands.Bot]):
 
 # Run the bot
 
-# Maximum reconnection attempts
-MAX_RECONNECT_ATTEMPTS = 100
-# Initial delay for reconnection (in seconds)
-INITIAL_RECONNECT_DELAY = 5
-# Maximum time to wait between connect attempts
-MAX_RECONNECT_DELAY = 60
-
-# Attempt to reconnect the bot with exponential backoff.
-async def try_reconnect(attempt : int = 1):
-    if attempt > MAX_RECONNECT_ATTEMPTS:
-        logger.error("Maximum reconnection attempts reached. Shutting down.")
-        await bot.close()
-        return
-    
-    if digest_check.is_running():
-        digest_check.cancel()
-
-    delay = INITIAL_RECONNECT_DELAY
-    
-    while True:        
-        logger.warning(f"Connection lost. Attempting to reconnect (Attempt {attempt}) in {delay} seconds...")
-
-        await asyncio.sleep(delay)
-        
-        try:
-            await bot.start(DISCORD_TOKEN or '')
-            return  # Exit if connection succeeds
-        except Exception as e:
-            logger.error(f"Reconnection attempt {attempt} failed: {e}")
-            attempt += 1
-            delay = min(delay * 2, MAX_RECONNECT_DELAY)  # Exponential backoff with max delay
-
 @bot.event
 async def on_ready():
     logger.info(f'Logged in as {bot.user}')
@@ -693,15 +662,5 @@ async def on_command_error(ctx: commands.Context[commands.Bot], error: commands.
         logger.error(f"Command error: {error}")
         await ctx.send("An error occurred while processing the command.")
 
-async def main():
-    try:
-        await bot.start(DISCORD_TOKEN or '')
-    except discord.errors.LoginFailure:
-        logger.error("Invalid Discord token. Please check your token.")
-    except Exception as e:
-        logger.error(f"Failed to connect: {e}")
-        await try_reconnect()
-
-if __name__ == "__main__":
-    # Run the bot in an asyncio event loop
-    asyncio.run(main())
+logger.info("Starting bot...")
+bot.run(DISCORD_TOKEN)
