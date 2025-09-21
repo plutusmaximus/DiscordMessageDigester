@@ -1,3 +1,4 @@
 *.log
 *.html
+*.emails
 bot_config.json

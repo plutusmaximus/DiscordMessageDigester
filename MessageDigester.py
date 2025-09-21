@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 logger = logging.getLogger("MessageDigester")
 
 def generate_log_filename(prefix: str = "log", extension: str = ".log") -> str:
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     return f"{prefix}_{timestamp}{extension}"
 
 logging.basicConfig(
@@ -74,8 +74,41 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 class ServerConfig(TypedDict):
     channels: list[int]
     digest_interval: int
-    email_recipients: list[str]
     last_digest: Optional[datetime]
+
+def make_email_file_path(serverId : int) -> str:
+    return f'{serverId}.emails'
+
+# Load a list of email addresses from a file, one email per line.
+def load_emails_from_file(serverId : int) -> list[str]:
+    filePath = make_email_file_path(serverId)
+
+    if not os.path.exists(filePath):
+        return []
+    
+    with open(filePath, 'r') as file:
+        # Read lines, strip whitespace, and filter out empty lines
+        emails = [line.strip() for line in file if line.strip()]
+
+    # deduplicate
+    dedupEmails = list(dict.fromkeys(emails))
+
+    if len(dedupEmails) != len(emails):
+        write_emails_to_file(serverId, dedupEmails)
+
+    return dedupEmails
+
+# Write a list of email addresses to a file, one email per line.
+def write_emails_to_file(serverId : int, emails : list[str]):
+    filePath = make_email_file_path(serverId)
+
+    with open(filePath, 'w') as file:
+        for email in emails:
+            file.write(f"{email}\n")
+    
+def save_emails(emails : dict[int, list[str]]):
+    for serverId in emails:
+        write_emails_to_file(serverId, emails[serverId])
 
 # Load digest configurations from file
 def load_config() -> dict[int,ServerConfig]:
@@ -83,20 +116,19 @@ def load_config() -> dict[int,ServerConfig]:
     if not os.path.exists(CONFIG_FILE):
         logger.info(f"{os.path.abspath(CONFIG_FILE)} does not exist - creating...")
         with open(CONFIG_FILE, 'w') as f:
-            data : Any = {}
-            json.dump(data, f)
-            return data
+            json.dump({}, f)
+            return {}
     else:
         with open(CONFIG_FILE, 'r') as f:
             tmp = json.load(f)
             # Convert keys from string to int
-            data = {int(key): value for key, value in tmp.items()}
+            config = {int(key): value for key, value in tmp.items()}
             # Convert last_digest back to datetime for each server
-            for server_id in data:
-                if 'last_digest' in data[server_id] and data[server_id]['last_digest']:
-                    data[server_id]['last_digest'] = datetime.fromisoformat(data[server_id]['last_digest'])
+            for server_id in config:
+                if 'last_digest' in config[server_id] and config[server_id]['last_digest']:
+                    config[server_id]['last_digest'] = datetime.fromisoformat(config[server_id]['last_digest'])
 
-            return data
+            return config
     return {}
 
 # Save configurations to file
@@ -108,7 +140,7 @@ def save_config(configs : dict[int, Any]):
             data[server_id]['last_digest'] = conf['last_digest'].isoformat()
     with open(CONFIG_FILE, 'w') as f:
         json.dump(data, f)
-
+    
 # Get a discord server's name from its ID.
 def get_server_name_from_id(server_id: int) -> str:
     try:
@@ -129,14 +161,12 @@ def get_server_name_from_id(server_id: int) -> str:
 def server_log_name(server_id : int) -> str:
     return f'"{get_server_name_from_id(server_id)}"/{server_id}'
 
-# Load the config
-# Global configs dictionary:
-#  {
-#       server_id: ServerConfig
-#  }
-# Note: 'server_id' refers to Discord's guild ID, which identifies a server, not premium guild features
+# Load the configs and email lists for each server
 try:
     configs = load_config()
+    email_lists : dict[int,list[str]] = {}
+    for serverId in configs:
+        email_lists[serverId] = load_emails_from_file(serverId)
 except Exception as e:
     logger.exception(f"An error occurred: {str(e)}")
 
@@ -172,6 +202,7 @@ def group_messages_by_timestamp(messages : list[discord.Message]) -> dict[str, l
     for msg in messages:
         # Timestamp granularity is minute, so messages
         # will be grouped under the minute in which they occurred.
+        # Use local time zone.
         timestamp = msg.created_at.astimezone().strftime('%a %b %d %I:%M %p')
         if timestamp not in msgGroups:
             msgGroups[timestamp] = []
@@ -359,8 +390,10 @@ async def generate_digest(server_id : int):
             return
         
         logger.info(f"Writing messages from server {server_log_name(server_id)} to digest...")
+
+        now = datetime.now()
         
-        baseFilename = f"digest_{server_id}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+        baseFilename = f"digest_{server_id}_{now.astimezone(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
 
         # Save to HTML file
         html = render_digest_to_html(serverName, digest)
@@ -376,16 +409,18 @@ async def generate_digest(server_id : int):
             logger.info(f"Email disabled for {server_log_name(server_id)} - no email will be sent")
             return
 
-        if 'email_recipients' not in conf or not conf['email_recipients']:
+        if server_id not in email_lists or not email_lists[server_id]:
             logger.info(f"No email recipients for {server_log_name(server_id)}")
             return
 
         logger.info(f"Sending digest email for server {server_log_name(server_id)}...")
 
-        recipientList = conf['email_recipients']
+        recipientList = email_lists[server_id]
     
-        subject = f"Discord Message Digest for {serverName}"
+        subject = f"Discord Message Digest for {serverName} - {now.astimezone().strftime('%a %b %d %I:%M %p')}"
         send_email(EMAIL_SENDER_EMAIL, EMAIL_SENDER_PASSWORD, recipientList, subject, html)
+
+        logger.info("Email sent")
 
     except Exception as e:
         logger.exception(f"An error occurred: {str(e)}")
@@ -407,7 +442,6 @@ def get_channel_name(channelId : int) -> str:
 SERVER_CONFIG_TEMPLATE: ServerConfig = {
     'channels': [],
     'digest_interval': DEFAULT_DIGEST_INTERVAL_MINUTES,
-    'email_recipients': [],
     'last_digest': None
 }
 
@@ -518,6 +552,16 @@ async def set_interval(ctx : commands.Context[commands.Bot], minutes: int):
 # Regular expression for basic email validation
 EMAIL_PATTERN = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
 
+def normalize_email(email : str) -> str:
+    return email.strip().lower()
+
+def validate_email(email : str) -> Optional[str]:
+    normalized = normalize_email(email)
+    if EMAIL_PATTERN.match(normalized):
+        return normalized
+
+    return None
+
 def email_list_from_csv(csv : str) -> list[str]:
     # Split string on either commas or whitespace
     return [r.strip().lower() for x in csv.split(',') for r in x.split()]
@@ -543,29 +587,28 @@ async def add_emails(ctx : commands.Context[commands.Bot], *, recipientCSV : str
             await ctx.send(f'Email recipient list not updated')
             return
         
-        emails : list[str] = []
+        emailsToAdd : list[str] = []
 
         for recipient in recipientsToAdd:
-            # Validate email format
-            if EMAIL_PATTERN.match(recipient):
-                emails.append(recipient)
+            validatedEmail = validate_email(recipient)
+            if validatedEmail:
+                emailsToAdd.append(validatedEmail)
             else:
                 await ctx.send(f'"{recipient}" is an invalid email')
 
-        if not emails:
+        if not emailsToAdd:
             await ctx.send(f'Email recipient list not updated')
             return
                 
         server_id = get_server_id(ctx)
 
-        populate_server_config(server_id)
+        if not email_lists[server_id]:
+            email_lists[server_id] = []
 
         # Merge lists and remove duplicates
-        oldEmails = configs[server_id]['email_recipients']
-        emails = list(dict.fromkeys(emails + oldEmails))
+        email_lists[server_id] = list(dict.fromkeys(emailsToAdd + email_lists[server_id]))
 
-        configs[server_id]['email_recipients'] = emails
-        save_config(configs)
+        save_emails(email_lists)
 
         await ctx.send(f'Email recipient list updated')
         logger.info(f'Email recipient list updated on server {server_log_name(server_id)}.')
@@ -596,14 +639,10 @@ async def remove_emails(ctx : commands.Context[commands.Bot], *, recipientCSV : 
                 
         server_id = get_server_id(ctx)
 
-        populate_server_config(server_id)
+        # New email list consists of old email list minus emails in the remove list
+        email_lists[server_id] = [r for r in email_lists[server_id] if r not in recipientsToRemove]
 
-        # Remove emails from recipient list
-        oldEmails = configs[server_id]['email_recipients']
-        emails = [recip for recip in oldEmails if recip not in recipientsToRemove]
-
-        configs[server_id]['email_recipients'] = emails
-        save_config(configs)
+        save_emails(email_lists)
 
         await ctx.send(f'Email recipient list updated')
         logger.info(f'Email recipient list updated on server {server_log_name(server_id)}.')
