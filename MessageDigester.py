@@ -562,26 +562,24 @@ def validate_email(email : str) -> Optional[str]:
 
     return None
 
-def email_list_from_csv(csv : str) -> list[str]:
-    # Split string on either commas or whitespace
-    return [r.strip().lower() for x in csv.split(',') for r in x.split()]
-
-# add_emails
-# Adds email recipients of the message digest.
+# upload_emails
+# Uploads email recipients from an attached file.
 # Usage
-#   !add_emails <recipient_list>
+#   !upload_emails <file_attachment>
 #
-# <recipient_list> is a comma-separated list of email addresses.
+# The attached file must contain a list of valid email addresses,
+# with one email address per line.
 #
 # Called from any channel.
 #
-@bot.command(name='add_emails',brief='Adds email recipients of the message digest')
+@bot.command(name='upload_emails',brief='Uploads email recipients from an attached file')
 @commands.has_permissions(administrator=True)
 @commands.guild_only()  # Restrict command to guilds only
-async def add_emails(ctx : commands.Context[commands.Bot], *, recipientCSV : str):
+async def upload_emails(ctx : commands.Context[commands.Bot], file : discord.Attachment):
     try:
-        
-        recipientsToAdd = email_list_from_csv(recipientCSV)
+        content = await file.read()
+
+        recipientsToAdd = [line.strip() for line in content.decode('utf-8').splitlines() if line.strip()]
 
         if not recipientsToAdd:
             await ctx.send(f'Email recipient list not updated')
@@ -607,40 +605,6 @@ async def add_emails(ctx : commands.Context[commands.Bot], *, recipientCSV : str
 
         # Merge lists and remove duplicates
         email_lists[server_id] = list(dict.fromkeys(emailsToAdd + email_lists[server_id]))
-
-        save_emails(email_lists)
-
-        await ctx.send(f'Email recipient list updated')
-        logger.info(f'Email recipient list updated on server {server_log_name(server_id)}.')
-    except Exception as e:
-        logger.exception(f"An error occurred: {str(e)}")
-
-# remove_emails
-# Removes email recipients from the message digest.
-# Usage
-#   !remove_emails <recipient_list>
-#
-# <recipient_list> is a comma-separated list of email addresses.
-#
-# Called from any channel.
-#
-@bot.command(name='remove_emails',brief='Removes email recipients from the message digest')
-@commands.has_permissions(administrator=True)
-@commands.guild_only()  # Restrict command to guilds only
-async def remove_emails(ctx : commands.Context[commands.Bot], *, recipientCSV : str):
-    try:
-        
-        # Split string on either commas or whitespace
-        recipientsToRemove = email_list_from_csv(recipientCSV)
-
-        if not recipientsToRemove:
-            await ctx.send(f'Email recipient list not updated')
-            return
-                
-        server_id = get_server_id(ctx)
-
-        # New email list consists of old email list minus emails in the remove list
-        email_lists[server_id] = [r for r in email_lists[server_id] if r not in recipientsToRemove]
 
         save_emails(email_lists)
 
@@ -690,15 +654,8 @@ async def on_disconnect():
 
 @bot.event
 async def on_command_error(ctx: commands.Context[commands.Bot], error: commands.CommandError):
-    if isinstance(error, commands.CommandNotFound):
-        commandNames = [command.name for command in bot.commands]
-        availableCommands = "\n".join(f"!{name}" for name in commandNames)
-        await ctx.send(f"Command not found.\nAvailable commands:\n{availableCommands}")
-    elif isinstance(error, commands.MissingPermissions):
-        await ctx.send("You don't have permission to use this command.")
-    else:
-        logger.error(f"Command error: {error}")
-        await ctx.send("An error occurred while processing the command.")
+    logger.error(f"Command error: {error}")
+    await ctx.send(f"Command error: {error}.")
 
 logger.info("Starting bot...")
 bot.run(DISCORD_TOKEN)

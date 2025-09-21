@@ -11,9 +11,7 @@ All commands are prefixed with `!`
 
 **!remove_channel** - Removes the current channel from the !list of monitored channels.
 
-**!add_emails** - Adds email recipients of the message digest.
-
-**!remove_emails** - Removes email recipients from the message digest.
+**!upload_emails** - Uploads email recipients from an attached file. The attached file must contain a list of valid email addresses, with one email address per line.
 
 **!set_interval** - Sets the interval at which to check for new messages.
 
