@@ -1,4 +1,3 @@
-import asyncio
 from datetime import datetime, timezone
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -110,6 +109,14 @@ def save_emails(emails : dict[int, list[str]]):
     for serverId in emails:
         write_emails_to_file(serverId, emails[serverId])
 
+# Remove all emails associated with a server
+def remove_emails(serverId : int, emails : dict[int, list[str]]):
+    logger.info(f'Removing emails for server {serverId}')
+    emails.pop(serverId, None)
+    filePath = make_email_file_path(serverId)
+    if os.path.exists(filePath):
+        os.remove(filePath)
+
 # Load digest configurations from file
 def load_config() -> dict[int,ServerConfig]:
     logger.info(f"Loading config from: {os.path.abspath(CONFIG_FILE)}...")
@@ -140,19 +147,23 @@ def save_config(configs : dict[int, Any]):
             data[server_id]['last_digest'] = conf['last_digest'].isoformat()
     with open(CONFIG_FILE, 'w') as f:
         json.dump(data, f)
+
+# Removes a server from the config
+def remove_server_config(server_id : int):
+    logger.info(f'Removing server {server_id} from configs')
+    configs.pop(server_id, None)
+    save_config(configs)
+    remove_emails(server_id, email_lists)
     
 # Get a discord server's name from its ID.
 def get_server_name_from_id(server_id: int) -> str:
     try:
         guild = bot.get_guild(server_id)
-        if guild is None:
-            # If guild not in cache, try fetching it
-            guild = asyncio.run(bot.fetch_guild(server_id))
-        if guild.name:
+        if guild and guild.name:
             return guild.name
     except discord.errors.Forbidden:
         logger.exception(f"Bot lacks permission to access server with ID {server_id}")
-    except discord.errors.HTTPException as e:
+    except Exception as e:
         logger.exception(f"Error fetching server with ID {server_id}: {e}")
     
     return "NO SERVER NAME"
@@ -181,6 +192,10 @@ async def digest_check():
     try:
         now = datetime.now(timezone.utc)
         for server_id, conf in list(configs.items()):  # Copy to avoid runtime changes
+            if not bot.get_guild(server_id):
+                # Either server no longer exists or we are no longer a member
+                remove_server_config(server_id)
+                continue
             if 'last_digest' not in conf or not conf['last_digest']:
                 conf['last_digest'] = now
                 continue
@@ -439,6 +454,16 @@ def get_channel_name(channelId : int) -> str:
 
     return channel.name
 
+def get_text_channel_from_name(ctx : commands.Context[commands.Bot], channel_name: str) -> discord.TextChannel | None:
+    assert ctx.guild is not None  # Tell type checker ctx.guild is not None
+
+    # Normalize case to avoid case sensitivity issues
+    channel_name = channel_name.lower()
+    for channel in ctx.guild.text_channels:
+        if channel.name.lower() == channel_name:
+            return channel
+    return None
+
 SERVER_CONFIG_TEMPLATE: ServerConfig = {
     'channels': [],
     'digest_interval': DEFAULT_DIGEST_INTERVAL_MINUTES,
@@ -465,27 +490,28 @@ def populate_server_config(server_id : int):
 # add_channel
 # Adds a channel to be monitored for new messages.
 # Usage
-#   !add_channel
+#   !add_channel <channel name>
 #
-# Called from the channel to add.
+# Called from any channel, ideally from an admin channel not visible to non-admins.
+# Cannot be called from a DM.
 #
-@bot.command(name='add_channel',brief='Adds the current channel to be monitored for new messages')
+@bot.command(name='add_channel',brief='Adds the channel to be monitored for new messages')
 @commands.has_permissions(administrator=True)
 @commands.guild_only()  # Restrict command to guilds only
-async def add_channel(ctx : commands.Context[commands.Bot]):
+async def add_channel(ctx : commands.Context[commands.Bot], channelName: str):
     try:
-        if not isinstance(ctx.channel, discord.TextChannel):
-            await ctx.send(f'Only text channels can be monitored.')
-            return
+        channel = get_text_channel_from_name(ctx, channelName)
 
-        channelName = get_channel_name(ctx.channel.id)
+        if not channel:
+            await ctx.send(f'#{channelName} is not a known text channel on this server.')
+            return
 
         server_id = get_server_id(ctx)
 
         populate_server_config(server_id)
 
-        if ctx.channel.id not in configs[server_id]['channels']:
-            configs[server_id]['channels'].append(ctx.channel.id)
+        if channel.id not in configs[server_id]['channels']:
+            configs[server_id]['channels'].append(channel.id)
             save_config(configs)
             await ctx.send(f'Added channel #{channelName} to monitored channels.')
             logger.info(f'Added channel #{channelName} to monitored channels on server {server_log_name(server_id)}.')
@@ -497,24 +523,26 @@ async def add_channel(ctx : commands.Context[commands.Bot]):
 # remove_channel
 # Removes a channel from the list of channels to be monitored.
 # Usage
-#   !remove_channel
+#   !remove_channel <channel name>
 #
-# Called from the channel to remove.
+# Called from any channel, ideally from an admin channel not visible to non-admins.
+# Cannot be called from a DM.
 #
-@bot.command(name='remove_channel',brief='Removes the current channel from the list of monitored channels')
+@bot.command(name='remove_channel',brief='Removes the channel from the list of monitored channels')
 @commands.has_permissions(administrator=True)
 @commands.guild_only()  # Restrict command to guilds only
-async def remove_channel(ctx : commands.Context[commands.Bot]):
+async def remove_channel(ctx : commands.Context[commands.Bot], channelName: str):
     try:
-        if not isinstance(ctx.channel, discord.TextChannel):
-            await ctx.send(f'Only text channels can be monitored.')
+        channel = get_text_channel_from_name(ctx, channelName)
+
+        if not channel:
+            await ctx.send(f'#{channelName} is not a known text channel on this server.')
             return
-        
-        channelName = get_channel_name(ctx.channel.id)
-        
+
         server_id = get_server_id(ctx)
-        if server_id in configs and ctx.channel.id in configs[server_id]['channels']:
-            configs[server_id]['channels'].remove(ctx.channel.id)
+
+        if server_id in configs and channel.id in configs[server_id]['channels']:
+            configs[server_id]['channels'].remove(channel.id)
             save_config(configs)
             await ctx.send(f'Removed channel #{channelName} from monitored channels.')
             logger.info(f'Removed channel #{channelName} from monitored channels {server_log_name(server_id)}.')
@@ -656,6 +684,11 @@ async def on_disconnect():
 async def on_command_error(ctx: commands.Context[commands.Bot], error: commands.CommandError):
     logger.error(f"Command error: {error}")
     await ctx.send(f"Command error: {error}.")
+
+@bot.event
+async def on_guild_remove(guild : discord.Guild):
+    logger.error(f"Bot removed from server {guild.id}")
+    remove_server_config(guild.id)
 
 logger.info("Starting bot...")
 bot.run(DISCORD_TOKEN)
